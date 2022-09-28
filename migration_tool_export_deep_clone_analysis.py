@@ -59,9 +59,8 @@ class prog_config:
             self.export_path=args['migrate_metastore_export']
 
         if self.export_path == "":
-            print ("SESSION_ID File Path is not valid!")
+            print ("Either --migrate_metastore_export or --sessionidpath must be defined!")
             exit(1)
-
 
         self.hive_path=args['hive_path']
         self.staging_path=args['staging_path']
@@ -72,40 +71,38 @@ class prog_config:
         self.show_ctas=args['show_ctas']
 
 
-def ddl_extract(path="."):
+def ddl_files(path="."):
     extracted=[]
-
-    ptypedbtble = re.compile(r"CREATE (?P<type>TABLE|VIEW) (spark_catalog\.)?(?P<database>[\w\-\_]+)\.(?P<table>[\w\-\_]+)(.+)")
-    pusing = re.compile(r"USING (?P<using>\w+)")
-    ploc = re.compile(r"(LOCATION \'(?P<location>(.*?))\')")
-
-
+    
     # Returning an iterator that will print simultaneously.
     for fp in glob.iglob(path, recursive = True):
         #print(fp)
         f = open(fp,'r')
-        testsql = f.read()
+        extracted.append(ddl_extract(f.read()))
 
-        objdetails = {}
-        m = ptypedbtble.search(testsql)
-        if m != None:
-            objdetails=m.groupdict()
-
-        m = pusing.search(testsql)
-        if m != None:
-            objdetails.update(m.groupdict())
-
-        m = ploc.search(testsql)
-        if m != None:
-            objdetails.update(m.groupdict())
-        
-        # print(f"\nLength:{len(objdetails)} {objdetails}")
-        extracted.append(objdetails)
-        
     return extracted
 
+def ddl_extract(ddlcmd):
+    ptypedbtble = re.compile(r"CREATE (?P<type>TABLE|VIEW) (spark_catalog\.)?(?P<database>[\w\-\_]+)\.(?P<table>[\w\-\_]+)(.+)")
+    pusing = re.compile(r"USING (?P<using>\w+)")
+    ploc = re.compile(r"(LOCATION \'(?P<location>(.*?))\')")
+
+    objdetails = {}
+    m = ptypedbtble.search(ddlcmd)
+    if m != None:
+        objdetails=m.groupdict()
+
+    m = pusing.search(ddlcmd)
+    if m != None:
+        objdetails.update(m.groupdict())
+
+    m = ploc.search(ddlcmd)
+    if m != None:
+        objdetails.update(m.groupdict())
+        
+    return objdetails
+
 def deepclone_build(buildobjs,migrate_prefix="staging_",direction="staging", stagingpath=""):
-    
 
     for obj in buildobjs:
         deltadb = obj['database']
@@ -118,6 +115,8 @@ def deepclone_build(buildobjs,migrate_prefix="staging_",direction="staging", sta
 
         if direction == "staging":
             ddlstatement = f"""
+            ----------------------------------------------------------------------
+            -- For table {deltadb}.{tablename}: Load delta location as a table
             CREATE DATABASE IF NOT EXISTS {deepdb};
             CREATE OR REPLACE TABLE {deepdb}.{tablename}
             DEEP CLONE {deltadb}.{tablename}
@@ -125,6 +124,13 @@ def deepclone_build(buildobjs,migrate_prefix="staging_",direction="staging", sta
             """
         else:
             ddlstatement = f"""
+            ----------------------------------------------------------------------
+            -- For table {deltadb}.{tablename}: Load delta location as a table
+            CREATE DATABASE IF NOT EXISTS {deepdb};
+            CREATE TABLE IF NOT EXISTS {deepdb}.{tablename} AS
+            SELECT * FROM delta.`{deepsqltablepath}`;
+
+            -- With staging delta table DEEP CLONE back to original location
             CREATE DATABASE IF NOT EXISTS {deltadb};
             CREATE OR REPLACE TABLE {deltadb}.{tablename}
             DEEP CLONE {deepdb}.{tablename}
@@ -242,7 +248,8 @@ if __name__ == "__main__":
 
     
     # extract details from ddl files
-    allobjs = ddl_extract(myconfig.export_path)
+    #allobjs = ddl_extract(myconfig.export_path)
+    allobjs = ddl_files(myconfig.export_path)
 
     # process for deepclone and ctas candidates
     deepobjs = deepclone_candidates(allobjs, myconfig.hive_path)
@@ -263,10 +270,10 @@ if __name__ == "__main__":
     if myconfig.show_deep:
         print(f"\n\n=== DEEP CLONE DDL Statements ===")
 
-        print(f"\n-- Source -> Staging --")
+        print(f"\n-- Source -> Staging [Run in Source Environment] --")
         deepclone_build(deepobjs,migrate_prefix="staging_",direction="staging", stagingpath=myconfig.staging_path)
 
-        print(f"\n-- Staging -> Target --")
+        print(f"\n-- Staging -> Target [Run in Target Environment] --")
         deepclone_build(deepobjs,migrate_prefix="staging_",direction="target", stagingpath=myconfig.staging_path)
 
     ## COMING SOON ##
