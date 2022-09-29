@@ -116,7 +116,7 @@ def deepclone_build(buildobjs,migrate_prefix="staging_",direction="staging", sta
         if direction == "staging":
             ddlstatement = f"""
             ----------------------------------------------------------------------
-            -- For table {deltadb}.{tablename}: Load delta location as a table
+            -- For table {deltadb}.{tablename}: Clone delta table to staging
             CREATE DATABASE IF NOT EXISTS {deepdb};
             CREATE OR REPLACE TABLE {deepdb}.{tablename}
             DEEP CLONE {deltadb}.{tablename}
