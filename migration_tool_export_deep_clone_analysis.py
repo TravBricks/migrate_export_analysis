@@ -1,7 +1,6 @@
 import glob
 import re
 import argparse
-from attr import has
 import pandas
 
 def prog_arg_parser():
