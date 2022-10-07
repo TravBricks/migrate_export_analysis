@@ -2,6 +2,7 @@ import glob
 import re
 import argparse
 import pandas
+import os
 
 def prog_arg_parser():
     # export workspace items
@@ -29,9 +30,6 @@ def prog_arg_parser():
     parser.add_argument('--details_format', action='store', choices=['csv','json'], default='json',
                             help='Define detail output format')
 
-    parser.add_argument('--details_output', action='store',
-                            help='Writes details to an output formatted as defined by --details_format')
-
     parser.add_argument('--show_deep', action='store_true',
                             help='Outputs DDL DEEP CLONE statements')
 
@@ -41,11 +39,16 @@ def prog_arg_parser():
     parser.add_argument('--show_config', action='store_true',
                             help='Show configuation details')
 
+    parser.add_argument('--output_path', action='store', default='./output/',
+                            help='Path to outputfile location')
+
 
     return parser
 
 
 class prog_config:
+    outputfiles = ["config.txt","summary.txt","details.txt","legacyissues.txt","source_env_deep.txt","source_env_ctas.txt","target_env_deep.txt","target_env_ctas.txt"]
+
     def __init__(self):
         self.export_path = ""
         self.hive_path = ""
@@ -56,7 +59,8 @@ class prog_config:
         self.show_ctas = False
         self.show_config = False
         self.details_format = None
-        self.details_output = None
+        self.logging = {}
+        self.output_path = ""
         
     def loadArgs(self):
         parser=prog_arg_parser()
@@ -81,12 +85,35 @@ class prog_config:
 
         self.show_details=args['show_details']
         self.details_format=args['details_format']
-        self.details_output=args['details_output']
 
         self.show_deep=args['show_deep']
         self.show_ctas=args['show_ctas']
 
         self.show_config=args['show_config']
+        self.output_path=args['output_path']
+
+        self.logging = dict.fromkeys(self.outputfiles, False)
+    
+    def logger(self,filename,content):
+        
+        #check for path
+        if os.path.exists(self.output_path) == False:
+            os.mkdir(self.output_path)
+
+        #check if file has been intialized
+        if not self.logging[filename]:
+            opentype = "w"
+            self.logging[filename]=True
+        else:
+            opentype = "a"
+
+        try:
+            f = open(f"{self.output_path}/{filename}", opentype)
+            f.writelines(content)
+            f.close()
+        except:
+            print(f"Unable to open/write to log file '{self.output_path}/{filename}'")
+
 
 def ddl_files(path="."):
     extracted=[]
@@ -134,6 +161,7 @@ def deepclone_build(buildobjs,migrate_prefix="staging_",direction="staging", sta
         deepsqltablepath = f"{stagingpath}{deepdb}.db/{tablename}"
 
         if direction == "staging":
+            filename = "source_env_deep.txt"
             ddlstatement = f"""
     ----------------------------------------------------------------------
     --Deep: For table {deltadb}.{tablename}: Deep clone delta table to staging
@@ -147,9 +175,10 @@ def deepclone_build(buildobjs,migrate_prefix="staging_",direction="staging", sta
        LOCATION '{deepsqltablepath}';
             """
         else:
+            filename = "target_env_deep.txt"
             ddlstatement = f"""
     ----------------------------------------------------------------------
-    --Deep: For table {deltadb}.{tablename}: Load delta location as a table
+    --Deep: For table {deltadb}.{tablename}: Load staging delta location as a table
         
         -- [1/4] Create staging database
         CREATE DATABASE IF NOT EXISTS {deepdb};
@@ -166,7 +195,7 @@ def deepclone_build(buildobjs,migrate_prefix="staging_",direction="staging", sta
         DEEP CLONE {deepdb}.{tablename}
         LOCATION '{sourcelocation}';
             """
-
+        myconfig.logger(filename,ddlstatement)
         print(ddlstatement)
 
     return None
@@ -199,6 +228,7 @@ def ctascopy_build(buildobjs,migrate_prefix="staging_",direction="staging", stag
                     newline+=f"\n{ddlindent}LOCATION '{ctassqltablepath}'"
                 sourceDDL+=f"\n{ddlindent}{newline}"
 
+            filename = "source_env_ctas.txt"
             ddlstatement = f"""
     ----------------------------------------------------------------------
     -- CTAS: For table {database}.{tablename}: Source to staging location
@@ -214,6 +244,7 @@ def ctascopy_build(buildobjs,migrate_prefix="staging_",direction="staging", stag
         SELECT * FROM {database}.{tablename};
             """
         else:
+            filename = "target_env_ctas.txt"
             targetDDL = ""
             for l, line in enumerate(ddllines):
                 if len(line) == 0: break
@@ -234,7 +265,8 @@ def ctascopy_build(buildobjs,migrate_prefix="staging_",direction="staging", stag
         INSERT INTO {database}.{tablename}
         SELECT * FROM {using}.`{ctassqltablepath}`;
         """
-
+        
+        myconfig.logger(filename,ddlstatement)
         print(ddlstatement)
 
     return None
@@ -327,8 +359,8 @@ def show_summary(objs,hivepath):
                 else:
                     table_nondelta_ext+=1
 
-    print("\n\n=== Analysis Summary ===")
-    print(f"""
+    summarytext = f"""
+    === Analysis Summary ===
     Total DDL statements: {total}
     
     Types:
@@ -342,24 +374,29 @@ def show_summary(objs,hivepath):
     External Tables:
         Delta: {table_delta_ext}
         Other: {table_nondelta_ext}
-    """)
+    """
+
+    myconfig.logger("summary.txt",summarytext)
+    print(summarytext)
 
 def show_config(config):
-        print(f"\n=== Configuration Summary ===")
-        print(f"""
-        Paths:
-            Export: {config.export_path}
-            Hive: {config.hive_path}
-            Staging: {config.staging_path}
-        
-        Display:
-            Show Summary: {config.show_summary}
-            Show Details: {config.show_details}
-                Format {config.details_format}
-                Output {config.details_output}
-            Show DEEP: {config.show_deep}
-            Show CTAS: {config.show_ctas}
-        """)
+    configtext = f"""
+    === Configuration Summary ===
+    Paths:
+        Export: {config.export_path}
+        Hive: {config.hive_path}
+        Staging: {config.staging_path}
+        Output: {config.output_path}
+
+    Display:
+        Show Summary: {config.show_summary}
+        Show Details: {config.show_details}
+            Format {config.details_format}
+        Show DEEP: {config.show_deep}
+        Show CTAS: {config.show_ctas}
+    """
+    myconfig.logger("config.txt",configtext)
+    print(configtext)
 
 
 if __name__ == "__main__":
@@ -380,12 +417,16 @@ if __name__ == "__main__":
     # display summary of the analysis
     if myconfig.show_summary: show_summary(allobjs, myconfig.hive_path)
 
-    print("\n=== Legacy or Issue Tables ===")
-    print('\n'.join(f"\t{line['database']}.{line['table']} using is {line['using']}" for line in problemobjs))
+    legacyissues = f"=== Legacy or Issue Tables ===\n"
+    legacyissues+='\n'.join(f"\t{line['database']}.{line['table']} using is {line['using']}" for line in problemobjs)
+    print(legacyissues)
+    myconfig.logger("legacyissues.txt",legacyissues)
+
 
     # generate details in defined format (defaults to json)
     if myconfig.details_format == "csv":
         df = pandas.DataFrame(allobjs)
+        df.drop(columns=['ddlcmd'],inplace=True)
         details = df.to_csv(index=False)
     else:
         details = '\n'.join(str(line) for line in allobjs)
@@ -395,15 +436,8 @@ if __name__ == "__main__":
         print(f"\n\n=== Table Details ===")
         print(details)
 
-    # write details to defined file
-    if myconfig.details_output is not None:
-        try:
-            f = open(myconfig.details_output, "w")
-            f.writelines(details)
-            f.close
-        except:
-            print(f"Could not create or write to {myconfig.details_output}, exiting application.")
-            exit(1)
+    # log details output
+    myconfig.logger("details.txt",details)
     
     # show deep clone candidates with DDL
     if myconfig.show_deep:
