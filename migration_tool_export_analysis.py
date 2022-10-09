@@ -288,7 +288,7 @@ def ctascopy_build(buildobjs,migrate_prefix="staging_",direction="staging", stag
 
         -- [3/3] Insert into target table with select from staging
         INSERT INTO {database}.{tablename}
-        SELECT * FROM {using}.'{ctassqltablepath}';
+        SELECT * FROM {using}.`{ctassqltablepath}`;
         """
         
         myconfig.logger(filename,ddlstatement)
