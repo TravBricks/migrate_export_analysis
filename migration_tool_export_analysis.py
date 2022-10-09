@@ -7,19 +7,28 @@ import os
 def prog_arg_parser():
     # export workspace items
     parser = argparse.ArgumentParser(
-        description='Analyze migration tool exported metastore table/view DDL statements')
+        description='Analyze migration tool exported metastore table/view DDL statements and in support of table data migration tasks.')
 
     parser.add_argument('--migrate_metastore_export', action='store', default='check_string_for_empty',
-                    help='Location of migration tool export (note:will recurse')
+                    help='Path of migration tool export (note:will recurse)')
 
     parser.add_argument('-p','--sessionidpath', action='store', default='check_string_for_empty',
-                    help='SESSION_ID File Path')
+                    help='SESSION_ID File Path, interchangeable with --migrate_metastore_export')
 
     parser.add_argument('--hive_path', action='store', default="/user/hive/warehouse/",
-                        help='The dbfs path where default managed databases and tables are written (should end with a \'/\'')
+                        help='The dbfs path where default managed databases and tables are written (should end with a \'/\')  (default: %(default)s)')
 
     parser.add_argument('--staging_path', action='store', default="/mnt/lnd/devmetastore_migration/",
-                        help='The absolute mount path of the staging bucket')
+                        help='The absolute mount path of the staging bucket (default: %(default)s)')
+
+    parser.add_argument('--output_path', action='store', default='./output/',
+                            help='Path to outputfile location')
+
+    parser.add_argument('--details_format', action='store', choices=['csv','json'], default='json',
+                            help='Define detail output format (default: %(default)s)')
+
+    parser.add_argument('--show_all', action='store_true',
+                            help='Include all show commands: summary, details, issues, deep, ctas and cleanup)')
 
     parser.add_argument('--show_summary', action='store_true',
                         help='Provides a summary of our analysis')
@@ -27,8 +36,8 @@ def prog_arg_parser():
     parser.add_argument('--show_details', action='store_true',
                             help='Outputs a full list of tables analyzed')
 
-    parser.add_argument('--details_format', action='store', choices=['csv','json'], default='json',
-                            help='Define detail output format')
+    parser.add_argument('--show_issues', action='store_true',
+                            help='Outputs a list of tables with non-standard using/format and other checks')
 
     parser.add_argument('--show_deep', action='store_true',
                             help='Outputs DDL DEEP CLONE statements')
@@ -36,18 +45,17 @@ def prog_arg_parser():
     parser.add_argument('--show_ctas', action='store_true',
                             help='Outputs CTAS Table Copy statements')
     
+    parser.add_argument('--show_cleanup', action='store_true',
+                            help='Outputs environment cleanup commands')
+
     parser.add_argument('--show_config', action='store_true',
                             help='Show configuation details')
 
-    parser.add_argument('--output_path', action='store', default='./output/',
-                            help='Path to outputfile location')
-
-
+    
     return parser
 
-
 class prog_config:
-    outputfiles = ["config.txt","summary.txt","details.txt","legacyissues.txt","source_env_deep.txt","source_env_ctas.txt","target_env_deep.txt","target_env_ctas.txt"]
+    outputfiles = ["config.txt","summary.txt","details.txt","legacyissues.txt","source_env_deep.txt","source_env_ctas.txt","target_env_deep.txt","target_env_ctas.txt","source_env_cleanup.txt","target_env_cleanup.txt"]
 
     def __init__(self):
         self.export_path = ""
@@ -55,9 +63,11 @@ class prog_config:
         self.staging_path = ""
         self.show_summary = False
         self.show_details = False
+        self.show_issues = False
         self.show_deep = False
         self.show_ctas = False
         self.show_config = False
+        self.show_cleanup = False
         self.details_format = None
         self.logging = {}
         self.output_path = ""
@@ -74,23 +84,36 @@ class prog_config:
         if args['migrate_metastore_export'] != 'check_string_for_empty':
             self.export_path=args['migrate_metastore_export']
 
+        if self.export_path.find("*") == -1:
+            if self.export_path[-1] != "/": self.export_path+="/"
+            self.export_path+="*/*"
+
         if self.export_path == "":
             print ("Either --migrate_metastore_export or --sessionidpath must be defined!")
             exit(1)
 
         self.hive_path=args['hive_path']
+        if self.hive_path[-1] != "/": self.hive_path+="/"        
         self.staging_path=args['staging_path']
-
-        self.show_summary=args['show_summary']
-
-        self.show_details=args['show_details']
         self.details_format=args['details_format']
-
-        self.show_deep=args['show_deep']
-        self.show_ctas=args['show_ctas']
-
-        self.show_config=args['show_config']
         self.output_path=args['output_path']
+
+        if args['show_all']:
+            self.show_summary=True
+            self.show_details=True
+            self.show_issues=True
+            self.show_deep=True
+            self.show_ctas=True
+            self.show_cleanup=True
+            self.show_config=True
+        else:
+            self.show_summary=args['show_summary']
+            self.show_details=args['show_details']
+            self.show_issues=args['show_issues']
+            self.show_deep=args['show_deep']
+            self.show_ctas=args['show_ctas']
+            self.show_cleanup=args['show_cleanup']
+            self.show_config=args['show_config']
 
         self.logging = dict.fromkeys(self.outputfiles, False)
     
@@ -123,6 +146,8 @@ def ddl_files(path="."):
         #print(fp)
         f = open(fp,'r')
         extracted.append(ddl_extract(f.read()))
+
+    if len(extracted) == 0: print(f"No DDL statements were located in path '{path}'")
 
     return extracted
 
@@ -271,6 +296,27 @@ def ctascopy_build(buildobjs,migrate_prefix="staging_",direction="staging", stag
 
     return None
 
+def cleanup_build(cleanupobjs,migrate_prefix="staging_", stagingpath=""):
+    
+    dblist = []
+    for obj in allobjs:
+        if obj['database'] in dblist: continue
+        dblist.append(obj['database'])
+
+    print(dblist)
+
+    for db in dblist:
+        stagingdb = f"{migrate_prefix}{db}"
+        ddlstatement = f"""
+    ----------------------------------------------------------------------
+    --Clean-up: Remove staging {stagingdb} database and all objects 
+       DROP DATABASE IF EXISTS {stagingdb} CASCADE;
+        """
+        myconfig.logger("source_env_cleanup.txt",ddlstatement)
+        myconfig.logger("target_env_cleanup.txt",ddlstatement)
+        print(ddlstatement)
+
+    return None
 
 def build_location(hivepath,database,table):
     location = ""
@@ -308,7 +354,6 @@ def ctascopy_candidates(objdict,hivepath):
     for obj in objdict:
         try:
             if obj['type'] == "TABLE":
-
                 if "location" not in obj:
                     obj['location'] = build_location(hivepath,obj['database'],obj['table'])
             
@@ -328,7 +373,14 @@ def problem_tables(objs,hivepath):
     for obj in objs:
         if obj["type"] == "TABLE":
             if obj['using'].lower() not in map(str.lower, valid_using):
-                # print(f"[WARNING] {obj['database']}.{obj['table']} has problematic 'USING' {obj['using']}")
+                obj['reason'] = f"Invalid table format is '{obj['using']}' needs to be {valid_using}"
+                obj['result'] = "Table will not be copied"
+                
+            if obj['using'].lower() == "text":
+                obj['reason'] = f"Warning table format TEXT only supports string field types"
+                obj['result'] = "Table copy may fail"
+
+            if 'reason' in obj:
                 problems.append(obj)
 
     return problems
@@ -417,10 +469,11 @@ if __name__ == "__main__":
     # display summary of the analysis
     if myconfig.show_summary: show_summary(allobjs, myconfig.hive_path)
 
-    legacyissues = f"=== Legacy or Issue Tables ===\n"
-    legacyissues+='\n'.join(f"\t{line['database']}.{line['table']} using is {line['using']}" for line in problemobjs)
-    print(legacyissues)
-    myconfig.logger("legacyissues.txt",legacyissues)
+    if myconfig.show_issues:
+        legacyissues = f"=== Legacy or Issue Tables ===\n"
+        legacyissues+='\n'.join(f"\t{line['database']}.{line['table']}: {line['result']} - {line['reason']}" for line in problemobjs)
+        print(legacyissues)
+        myconfig.logger("legacyissues.txt",legacyissues)
 
 
     # generate details in defined format (defaults to json)
@@ -435,9 +488,7 @@ if __name__ == "__main__":
     if myconfig.show_details:
         print(f"\n\n=== Table Details ===")
         print(details)
-
-    # log details output
-    myconfig.logger("details.txt",details)
+        myconfig.logger("details.txt",details)
     
     # show deep clone candidates with DDL
     if myconfig.show_deep:
@@ -458,5 +509,14 @@ if __name__ == "__main__":
 
         print(f"\n-- CTAS: Staging -> Target --")
         ctascopy_build(ctasobjs,migrate_prefix="staging_",direction="target", stagingpath=myconfig.staging_path)
+
+    if myconfig.show_cleanup:
+        print(f"\n\n=== Cleanup: Drop all staging databases and tables ===")
+
+        print(f"\n-- Cleanup: Source environment --")
+        cleanup_build(allobjs,migrate_prefix="staging_", stagingpath=myconfig.staging_path)
+
+        print(f"\n-- Cleanup: Target environment --")
+        cleanup_build(allobjs,migrate_prefix="staging_", stagingpath=myconfig.staging_path)
 
     # fin
