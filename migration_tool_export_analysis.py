@@ -1,7 +1,6 @@
 import glob
 import re
 import argparse
-import pandas
 import os
 
 def prog_arg_parser():
@@ -475,17 +474,9 @@ if __name__ == "__main__":
         print(legacyissues)
         myconfig.logger("legacyissues.txt",legacyissues)
 
-
-    # generate details in defined format (defaults to json)
-    if myconfig.details_format == "csv":
-        df = pandas.DataFrame(allobjs)
-        df.drop(columns=['ddlcmd'],inplace=True)
-        details = df.to_csv(index=False)
-    else:
-        details = '\n'.join(str(line) for line in allobjs)
-
     # display details as stdout
     if myconfig.show_details:
+        details = '\n'.join(str(line) for line in allobjs)
         print(f"\n\n=== Table Details ===")
         print(details)
         myconfig.logger("details.txt",details)
